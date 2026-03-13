@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { useStore, Workspace, Channel, Category } from '@/store/useStore';
+import { useStore, Workspace, Channel, Category, WorkspaceMember } from '@/store/useStore';
 import { db } from '@/lib/firebase';
-import { collection, addDoc, query, orderBy, onSnapshot, doc, setDoc, updateDoc, limit, Timestamp, where } from 'firebase/firestore';
-import { LayoutGrid, Plus, Hash, Mic, Bot, Link as LinkIcon, Users, Video, Phone, Upload, Sparkles, Loader2, Image as ImageIcon, X, Settings2, Send, User, Calendar, Check, Calculator, FileText, Newspaper, Grid, ExternalLink, Shield, ShieldAlert, UserMinus } from 'lucide-react';
+import { collection, addDoc, query, orderBy, onSnapshot, doc, setDoc, updateDoc, limit, Timestamp, where, deleteDoc } from 'firebase/firestore';
+import { LayoutGrid, Plus, Hash, Mic, Bot, Link as LinkIcon, Users, Video, Phone, Upload, Sparkles, Loader2, Image as ImageIcon, X, Settings2, Send, User, Calendar, Check, Calculator, FileText, Newspaper, Grid, ExternalLink, Shield, ShieldAlert, UserMinus, Trash2, Youtube, Globe } from 'lucide-react';
 import Image from 'next/image';
 import { GoogleGenAI } from "@google/genai";
 import { compressImage } from '@/lib/utils';
@@ -215,6 +215,10 @@ export default function WorkspacesTab() {
   const [isCreatingChannel, setIsCreatingChannel] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [isEditingChannelSettings, setIsEditingChannelSettings] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<{
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [showCalendar, setShowCalendar] = useState(false);
   
@@ -242,6 +246,10 @@ export default function WorkspacesTab() {
   }, [messages]);
 
   const activeWorkspace = workspaces.find(w => w.id === activeWorkspaceId);
+  const wsAddons = activeWorkspace ? addons.filter(a => activeWorkspace.tools.includes(a.id)) : [];
+  const currentUser = activeWorkspace?.members.find(m => m.id === user?.uid);
+  const isCurrentUserAdmin = currentUser?.isAdmin;
+  const isCurrentUserAssistant = currentUser?.isAssistantAdmin;
   const activeChannel = activeWorkspaceAddonId ? null : (activeWorkspace?.channels.find(c => c.id === activeChannelId) || activeWorkspace?.channels[0]);
   const activeWorkspaceAddon = addons.find(a => a.id === activeWorkspaceAddonId);
 
@@ -448,17 +456,17 @@ export default function WorkspacesTab() {
     // Add creator as Admin
     wsMembers.push({
       id: user.uid,
-      name: profile?.username || user.displayName || 'Me',
-      email: user.email || '',
-      photoUrl: profile?.avatarUrl || user.photoURL || '',
+      username: profile?.username || user.displayName || 'Me',
+      avatarUrl: profile?.avatarUrl || user.photoURL || '',
+      friendCode: profile?.friendCode || '',
       role: 'Admin',
       isAdmin: true
     });
 
     const wsAddons = addons.filter(a => selectedAddons.includes(a.id));
-    const tools = wsAddons.filter(a => a.category === 'tool').map(a => a.id);
-    const videos = wsAddons.filter(a => a.category === 'video').map(a => a.id);
-    const websites = wsAddons.filter(a => a.category === 'website').map(a => a.id);
+    const tools = wsAddons.filter(a => a.type === 'tool').map(a => a.id);
+    const videos = wsAddons.filter(a => a.type === 'video').map(a => a.id);
+    const websites = wsAddons.filter(a => a.type === 'website').map(a => a.id);
 
     const defaultCategories: Category[] = [
       { id: 'cat-general', name: 'General' },
@@ -572,16 +580,22 @@ export default function WorkspacesTab() {
 
   const handleUpdateChannel = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingChannel || !activeWorkspaceId || !activeWorkspace) return;
+    if (!editingChannel || !activeWorkspaceId || !activeWorkspace) {
+      console.error("Missing data:", { editingChannel, activeWorkspaceId, activeWorkspace });
+      return;
+    }
 
     const updatedChannels = activeWorkspace.channels.map(c => 
       c.id === editingChannel.id ? editingChannel : c
     );
 
+    console.log("Updating channel:", { activeWorkspaceId, editingChannel, activeWorkspaceChannels: activeWorkspace.channels });
+
     try {
       await updateDoc(doc(db, "workspaces", activeWorkspaceId), {
         channels: updatedChannels
       });
+      console.log("Channel updated successfully");
       setIsEditingChannelSettings(false);
       setEditingChannel(null);
     } catch (error) {
@@ -1108,24 +1122,47 @@ export default function WorkspacesTab() {
                   const addon = addons.find(a => a.id === toolId);
                   if (!addon) return null;
                   return (
-                    <button 
+                    <div 
                       key={addon.id}
-                      onClick={() => {
-                        setActiveWorkspaceAddonId(addon.id);
-                        setActiveChannelId(null);
-                        setShowMobileSidebar(false);
-                      }}
                       className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-all border border-transparent group ${
                         activeWorkspaceAddonId === addon.id
                           ? 'bg-white/10 text-white border-white/10 shadow-xl' 
                           : 'text-white/40 hover:bg-white/5 hover:text-white'
                       }`}
                     >
-                      <div className="w-4 h-4 rounded overflow-hidden shrink-0">
-                        <Image src={addon.iconUrl} alt="" width={16} height={16} className="object-cover" unoptimized referrerPolicy="no-referrer" />
-                      </div>
-                      <span className="truncate font-black text-sm tracking-tight text-left">{addon.name}</span>
-                    </button>
+                      <button 
+                        onClick={() => {
+                          setActiveWorkspaceAddonId(addon.id);
+                          setActiveChannelId(null);
+                          setShowMobileSidebar(false);
+                        }}
+                        className="flex-1 flex items-center gap-3 min-w-0"
+                      >
+                        <div className="w-4 h-4 rounded overflow-hidden shrink-0">
+                          <Image src={addon.iconUrl} alt="" width={16} height={16} className="object-cover" unoptimized referrerPolicy="no-referrer" />
+                        </div>
+                        <span className="truncate font-black text-sm tracking-tight text-left">{addon.name}</span>
+                      </button>
+                      {(isCurrentUserAdmin || isCurrentUserAssistant) && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setConfirmAction({
+                              message: `Remove ${addon.name} from workspace?`,
+                              onConfirm: async () => {
+                                const updatedTools = activeWorkspace.tools?.filter(id => id !== addon.id) || [];
+                                await updateDoc(doc(db, "workspaces", activeWorkspaceId!), { tools: updatedTools });
+                                if (activeWorkspaceAddonId === addon.id) setActiveWorkspaceAddonId(null);
+                              }
+                            });
+                          }}
+                          className="p-1 rounded-lg hover:bg-red-500/20 text-red-500 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                          title="Remove Tool"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -1150,24 +1187,47 @@ export default function WorkspacesTab() {
                   const addon = addons.find(a => a.id === videoId);
                   if (!addon) return null;
                   return (
-                    <button 
+                    <div 
                       key={addon.id}
-                      onClick={() => {
-                        setActiveWorkspaceAddonId(addon.id);
-                        setActiveChannelId(null);
-                        setShowMobileSidebar(false);
-                      }}
                       className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-all border border-transparent group ${
                         activeWorkspaceAddonId === addon.id
                           ? 'bg-white/10 text-white border-white/10 shadow-xl' 
                           : 'text-white/40 hover:bg-white/5 hover:text-white'
                       }`}
                     >
-                      <div className="w-4 h-4 rounded overflow-hidden shrink-0">
-                        <Image src={addon.iconUrl} alt="" width={16} height={16} className="object-cover" unoptimized referrerPolicy="no-referrer" />
-                      </div>
-                      <span className="truncate font-black text-sm tracking-tight text-left">{addon.name}</span>
-                    </button>
+                      <button 
+                        onClick={() => {
+                          setActiveWorkspaceAddonId(addon.id);
+                          setActiveChannelId(null);
+                          setShowMobileSidebar(false);
+                        }}
+                        className="flex-1 flex items-center gap-3 min-w-0"
+                      >
+                        <div className="w-4 h-4 rounded overflow-hidden shrink-0">
+                          <Image src={addon.iconUrl} alt="" width={16} height={16} className="object-cover" unoptimized referrerPolicy="no-referrer" />
+                        </div>
+                        <span className="truncate font-black text-sm tracking-tight text-left">{addon.name}</span>
+                      </button>
+                      {(isCurrentUserAdmin || isCurrentUserAssistant) && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setConfirmAction({
+                              message: `Remove ${addon.name} from workspace?`,
+                              onConfirm: async () => {
+                                const updatedVideos = activeWorkspace.videos?.filter(id => id !== addon.id) || [];
+                                await updateDoc(doc(db, "workspaces", activeWorkspaceId!), { videos: updatedVideos });
+                                if (activeWorkspaceAddonId === addon.id) setActiveWorkspaceAddonId(null);
+                              }
+                            });
+                          }}
+                          className="p-1 rounded-lg hover:bg-red-500/20 text-red-500 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                          title="Remove Video"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -1192,24 +1252,47 @@ export default function WorkspacesTab() {
                   const addon = addons.find(a => a.id === websiteId);
                   if (!addon) return null;
                   return (
-                    <button 
+                    <div 
                       key={addon.id}
-                      onClick={() => {
-                        setActiveWorkspaceAddonId(addon.id);
-                        setActiveChannelId(null);
-                        setShowMobileSidebar(false);
-                      }}
                       className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl transition-all border border-transparent group ${
                         activeWorkspaceAddonId === addon.id
                           ? 'bg-white/10 text-white border-white/10 shadow-xl' 
                           : 'text-white/40 hover:bg-white/5 hover:text-white'
                       }`}
                     >
-                      <div className="w-4 h-4 rounded overflow-hidden shrink-0">
-                        <Image src={addon.iconUrl} alt="" width={16} height={16} className="object-cover" unoptimized referrerPolicy="no-referrer" />
-                      </div>
-                      <span className="truncate font-black text-sm tracking-tight text-left">{addon.name}</span>
-                    </button>
+                      <button 
+                        onClick={() => {
+                          setActiveWorkspaceAddonId(addon.id);
+                          setActiveChannelId(null);
+                          setShowMobileSidebar(false);
+                        }}
+                        className="flex-1 flex items-center gap-3 min-w-0"
+                      >
+                        <div className="w-4 h-4 rounded overflow-hidden shrink-0">
+                          <Image src={addon.iconUrl} alt="" width={16} height={16} className="object-cover" unoptimized referrerPolicy="no-referrer" />
+                        </div>
+                        <span className="truncate font-black text-sm tracking-tight text-left">{addon.name}</span>
+                      </button>
+                      {(isCurrentUserAdmin || isCurrentUserAssistant) && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            setConfirmAction({
+                              message: `Remove ${addon.name} from workspace?`,
+                              onConfirm: async () => {
+                                const updatedWebsites = activeWorkspace.websites?.filter(id => id !== addon.id) || [];
+                                await updateDoc(doc(db, "workspaces", activeWorkspaceId!), { websites: updatedWebsites });
+                                if (activeWorkspaceAddonId === addon.id) setActiveWorkspaceAddonId(null);
+                              }
+                            });
+                          }}
+                          className="p-1 rounded-lg hover:bg-red-500/20 text-red-500 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                          title="Remove Website"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -1219,7 +1302,7 @@ export default function WorkspacesTab() {
           <div>
             <h3 className="text-[10px] font-black text-white/40 uppercase px-2 mb-4 tracking-[0.2em]">AI Tools</h3>
             <div className="space-y-2">
-              {activeWorkspace.addons.length === 0 ? <p className="text-[10px] text-white/20 px-2 italic font-medium">No tools shared.</p> : activeWorkspace.addons.map(a => (
+              {wsAddons.length === 0 ? <p className="text-[10px] text-white/20 px-2 italic font-medium">No tools shared.</p> : wsAddons.map(a => (
                 <button 
                   key={a.id} 
                   onClick={() => {
@@ -1236,7 +1319,26 @@ export default function WorkspacesTab() {
                   {a.iconUrl && (
                     <Image src={a.iconUrl} alt="" width={24} height={24} className="rounded-lg shadow-xl group-hover:scale-110 transition-transform" unoptimized referrerPolicy="no-referrer" />
                   )}
-                  <span className="truncate text-sm font-black tracking-tight">{a.name}</span>
+                  <span className="truncate text-sm font-black tracking-tight flex-1 text-left">{a.name}</span>
+                  {(isCurrentUserAdmin || isCurrentUserAssistant) && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        setConfirmAction({
+                          message: `Remove ${a.name} from workspace?`,
+                          onConfirm: async () => {
+                            const updatedAddons = wsAddons.filter(addon => addon.id !== a.id);
+                            await updateDoc(doc(db, "workspaces", activeWorkspaceId!), { tools: updatedAddons.map(a => a.id) });
+                            if (activeWorkspaceAddonId === a.id) setActiveWorkspaceAddonId(null);
+                          }
+                        });
+                      }}
+                      className="p-1 rounded-lg hover:bg-red-500/20 text-red-500 opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                      title="Remove AI Tool"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </button>
               ))}
             </div>
@@ -1631,13 +1733,13 @@ export default function WorkspacesTab() {
 
       {/* Edit Channel Modal */}
       {isEditingChannelSettings && editingChannel && (
-        <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-[#1a1a1a] border border-white/10 rounded-[2.5rem] p-8 max-w-md w-full shadow-2xl">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-black text-white tracking-tight">Channel Settings</h3>
+        <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-2 backdrop-blur-sm">
+          <div className="bg-[#1a1a1a] border border-white/10 rounded-3xl p-4 max-w-md w-full shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-black text-white tracking-tight">Channel Settings</h3>
               <button 
                 onClick={() => setIsEditingChannelSettings(false)}
-                className="p-2 hover:bg-white/5 rounded-xl text-white/40 hover:text-white transition-all"
+                className="p-1.5 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all"
               >
                 <X className="w-6 h-6" />
               </button>
@@ -1691,14 +1793,13 @@ export default function WorkspacesTab() {
                             });
                           }
                         }}
-                        className={`flex items-center gap-3 p-4 rounded-2xl border transition-all text-left ${isEnabled ? 'bg-white/10 border-white/20 shadow-xl' : 'bg-white/5 border-white/5 hover:bg-white/10'}`}
+                        className={`flex items-center gap-2 p-3 rounded-xl border transition-all text-left ${isEnabled ? 'bg-red-500/10 border-red-500/20 shadow-xl' : 'bg-white/5 border-white/5 hover:bg-white/10'}`}
                       >
-                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isEnabled ? 'bg-white/20 text-white' : 'bg-white/5 text-white/40'}`}>
-                          <Icon className="w-5 h-5" />
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${isEnabled ? 'bg-red-500/20 text-red-500' : 'bg-white/5 text-white/40'}`}>
+                          <Icon className="w-4 h-4" />
                         </div>
                         <div className="min-w-0">
-                          <div className="text-xs font-black text-white tracking-tight">{tool.name}</div>
-                          <div className="text-[9px] text-white/40 font-medium truncate">{tool.description}</div>
+                          <div className="text-[10px] font-black text-white tracking-tight">{isEnabled ? 'Remove' : 'Add'} {tool.name}</div>
                         </div>
                       </button>
                     );
@@ -1732,14 +1833,14 @@ export default function WorkspacesTab() {
                               });
                             }
                           }}
-                          className={`flex items-center gap-3 p-4 rounded-2xl border transition-all text-left ${isEnabled ? 'bg-white/10 border-white/20 shadow-xl' : 'bg-white/5 border-white/5 hover:bg-white/10'}`}
+                          className={`flex items-center gap-2 p-3 rounded-xl border transition-all text-left ${isEnabled ? 'bg-red-500/10 border-red-500/20 shadow-xl' : 'bg-white/5 border-white/5 hover:bg-white/10'}`}
                         >
-                          <div className="w-10 h-10 rounded-xl overflow-hidden shrink-0 border border-white/10">
-                            <Image src={addon.iconUrl} alt="" width={40} height={40} className="object-cover" unoptimized referrerPolicy="no-referrer" />
+                          <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0 border border-white/10">
+                            <Image src={addon.iconUrl} alt="" width={32} height={32} className="object-cover" unoptimized referrerPolicy="no-referrer" />
                           </div>
                           <div className="min-w-0">
-                            <div className="text-xs font-black text-white tracking-tight truncate">{addon.name}</div>
-                            <div className="text-[9px] text-white/40 font-medium uppercase tracking-widest">{addon.type}</div>
+                            <div className="text-[10px] font-black text-white tracking-tight truncate">{isEnabled ? 'Remove' : 'Add'} {addon.name}</div>
+                            <div className="text-[8px] text-white/40 font-medium uppercase tracking-widest">{addon.type}</div>
                           </div>
                         </button>
                       );
@@ -1762,13 +1863,16 @@ export default function WorkspacesTab() {
                   <button 
                     type="button"
                     onClick={async () => {
-                      if (confirm(`Are you sure you want to delete the channel "${editingChannel.name}"?`)) {
-                        const updatedChannels = activeWorkspace.channels.filter(c => c.id !== editingChannel.id);
-                        await updateDoc(doc(db, "workspaces", activeWorkspaceId!), { channels: updatedChannels });
-                        setIsEditingChannelSettings(false);
-                        setEditingChannel(null);
-                        if (activeChannelId === editingChannel.id) setActiveChannelId(null);
-                      }
+                      setConfirmAction({
+                        message: `Are you sure you want to delete the channel "${editingChannel.name}"?`,
+                        onConfirm: async () => {
+                          const updatedChannels = activeWorkspace.channels.filter(c => c.id !== editingChannel.id);
+                          await updateDoc(doc(db, "workspaces", activeWorkspaceId!), { channels: updatedChannels });
+                          setIsEditingChannelSettings(false);
+                          setEditingChannel(null);
+                          if (activeChannelId === editingChannel.id) setActiveChannelId(null);
+                        }
+                      });
                     }}
                     className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-500 font-black py-4 rounded-2xl border border-red-500/20 transition-all uppercase tracking-widest text-xs"
                   >
@@ -1783,7 +1887,7 @@ export default function WorkspacesTab() {
       {/* Addon Hub Modal */}
       {isAddonHubModalOpen && (
         <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-[#1a1a1a] border border-white/10 rounded-[2.5rem] p-8 max-w-2xl w-full shadow-2xl">
+          <div className="bg-[#1a1a1a] border border-white/10 rounded-[2.5rem] p-8 max-w-2xl w-full shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
             <div className="flex items-center justify-between mb-8">
               <h3 className="text-2xl font-black text-white tracking-tight capitalize">Addon Hub</h3>
               <button 
@@ -1838,8 +1942,8 @@ export default function WorkspacesTab() {
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-h-[60vh] overflow-y-auto pr-2 custom-scrollbar">
-              {addons.filter(a => a.category === addonPickerType && a.showInWorkspaces).map(addon => {
-                const isAdded = activeWorkspace[addonPickerType === 'tool' ? 'tools' : addonPickerType === 'video' ? 'videos' : 'websites']?.includes(addon.id);
+              {addons.filter(a => a.type === addonPickerType && a.showInWorkspaces).map(addon => {
+                const isAdded = (activeWorkspace[addonPickerType === 'tool' ? 'tools' : addonPickerType === 'video' ? 'videos' : 'websites'] || []).includes(addon.id);
                 return (
                   <button
                     key={addon.id}
@@ -1862,7 +1966,7 @@ export default function WorkspacesTab() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-black text-white tracking-tight truncate">{addon.name}</div>
-                      <div className="text-[10px] text-white/40 font-medium truncate">{addon.description}</div>
+                      <div className="text-[10px] text-white/40 font-medium truncate">{addon.type}</div>
                     </div>
                     {isAdded ? <Check className="w-5 h-5 text-white" /> : <Plus className="w-5 h-5 text-white/20" />}
                   </button>
@@ -1876,12 +1980,12 @@ export default function WorkspacesTab() {
       {/* Workspace Settings Modal */}
       {isEditingWorkspaceSettings && activeWorkspace && (
         <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-[#1a1a1a] border border-white/10 rounded-[2.5rem] p-8 max-w-4xl w-full shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
-            <div className="flex items-center justify-between mb-8">
-              <h3 className="text-3xl font-black text-white tracking-tight">Workspace Settings</h3>
+          <div className="bg-[#1a1a1a] border border-white/10 rounded-3xl p-6 max-w-4xl w-full shadow-2xl max-h-[90vh] overflow-y-auto custom-scrollbar">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-black text-white tracking-tight">Workspace Settings</h3>
               <button 
                 onClick={() => setIsEditingWorkspaceSettings(false)}
-                className="p-2 hover:bg-white/5 rounded-xl text-white/40 hover:text-white transition-all"
+                className="p-1.5 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-all"
               >
                 <X className="w-6 h-6" />
               </button>
@@ -1924,13 +2028,13 @@ export default function WorkspacesTab() {
                     return (
                       <div key={member.id} className="flex items-center gap-4 p-4 bg-white/5 rounded-2xl border border-white/5">
                         <div className="relative">
-                          {member.photoUrl && (
-                            <Image src={member.photoUrl} alt="" width={40} height={40} className="rounded-xl border border-white/10" unoptimized referrerPolicy="no-referrer" />
+                          {member.avatarUrl && (
+                            <Image src={member.avatarUrl} alt="" width={40} height={40} className="rounded-xl border border-white/10" unoptimized referrerPolicy="no-referrer" />
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <span className="text-white font-black tracking-tight truncate">{member.name}</span>
+                            <span className="text-white font-black tracking-tight truncate">{member.username}</span>
                             {member.isAdmin && <span className="bg-white/10 text-white text-[8px] px-2 py-0.5 rounded-lg font-black uppercase tracking-widest border border-white/10">Admin</span>}
                             {member.isAssistantAdmin && <span className="bg-white/5 text-white/60 text-[8px] px-2 py-0.5 rounded-lg font-black uppercase tracking-widest border border-white/10">Asst. Admin</span>}
                           </div>
@@ -1981,14 +2085,17 @@ export default function WorkspacesTab() {
                               </button>
                               <button
                                 onClick={async () => {
-                                  if (confirm(`Remove ${member.name} from workspace?`)) {
-                                    const updatedMembers = activeWorkspace.members.filter(m => m.id !== member.id);
-                                    const updatedMemberIds = activeWorkspace.memberIds.filter(id => id !== member.id);
-                                    await updateDoc(doc(db, "workspaces", activeWorkspaceId!), { 
-                                      members: updatedMembers,
-                                      memberIds: updatedMemberIds
-                                    });
-                                  }
+                                  setConfirmAction({
+                                    message: `Remove ${member.username} from workspace?`,
+                                    onConfirm: async () => {
+                                      const updatedMembers = activeWorkspace.members.filter(m => m.id !== member.id);
+                                      const updatedMemberIds = activeWorkspace.memberIds.filter(id => id !== member.id);
+                                      await updateDoc(doc(db, "workspaces", activeWorkspaceId!), { 
+                                        members: updatedMembers,
+                                        memberIds: updatedMemberIds
+                                      });
+                                    }
+                                  });
                                 }}
                                 className="p-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 rounded-xl border border-red-500/20 transition-all"
                               >
@@ -2008,11 +2115,14 @@ export default function WorkspacesTab() {
                 <div className="pt-8 border-t border-white/10">
                   <button
                     onClick={async () => {
-                      if (confirm("Are you sure you want to delete this workspace? This cannot be undone.")) {
-                        await deleteDoc(doc(db, "workspaces", activeWorkspaceId!));
-                        setActiveWorkspaceId(null);
-                        setIsEditingWorkspaceSettings(false);
-                      }
+                      setConfirmAction({
+                        message: "Are you sure you want to delete this workspace? This cannot be undone.",
+                        onConfirm: async () => {
+                          await deleteDoc(doc(db, "workspaces", activeWorkspaceId!));
+                          setActiveWorkspaceId(null);
+                          setIsEditingWorkspaceSettings(false);
+                        }
+                      });
                     }}
                     className="w-full bg-red-500/10 hover:bg-red-500/20 text-red-500 py-4 rounded-2xl border border-red-500/20 font-black uppercase tracking-widest transition-all"
                   >
@@ -2020,6 +2130,31 @@ export default function WorkspacesTab() {
                   </button>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmAction && (
+        <div className="fixed inset-0 bg-black/60 z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-[#1a1a1a] border border-white/10 rounded-3xl p-6 shadow-2xl max-w-sm w-full">
+            <h3 className="text-lg font-black text-white mb-4">Confirm Action</h3>
+            <p className="text-white/60 mb-6">{confirmAction.message}</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmAction(null)}
+                className="flex-1 bg-white/5 hover:bg-white/10 text-white py-3 rounded-xl border border-white/10 font-black uppercase tracking-widest text-xs"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  confirmAction.onConfirm();
+                  setConfirmAction(null);
+                }}
+                className="flex-1 bg-red-500 hover:bg-red-600 text-white py-3 rounded-xl border border-red-500/20 font-black uppercase tracking-widest text-xs"
+              >
+                Confirm
+              </button>
             </div>
           </div>
         </div>
